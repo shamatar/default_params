@@ -39,3 +39,10 @@ fn test_call_generic() {
     let full = hello_with_generics_impl::<5>(1, 2, 4);
     assert_eq!(full, partial);
 }
+
+// #[test]
+// fn test_call_generic_with_fn_like_default_value() {
+//     let partial = hello_with_generics_and_fn_like_expression!(<5>, 1, 2);
+//     let full = hello_with_generics_impl::<5>(1, 2, 1*2*1*2);
+//     assert_eq!(full, partial);
+// }

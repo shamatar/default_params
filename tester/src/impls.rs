@@ -17,3 +17,12 @@ pub fn hello_with_generics<const N: usize>(
 ) -> usize{
     a*b + c + N
 }
+
+// #[default_params]
+// pub fn hello_with_generics_and_fn_like_expression<const N: usize>(
+//     a: usize, 
+//     b: usize, 
+//     #[default_value(a*b*a*b)] c: usize
+// ) -> usize{
+//     a*b + c + N
+// }

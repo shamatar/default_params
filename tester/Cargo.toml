@@ -1,16 +1,10 @@
 [package]
-name = "default_params"
+name = "default_params_test"
 version = "0.1.0"
 authors = ["Alex Vlasov <alex.m.vlasov@gmail.com>"]
 edition = "2018"
 
-[lib]
-proc-macro = true
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-syn = {version = "*", features = ["full", "extra-traits"]}
-quote = {version = "*"}
-proc-macro2 = "*"
-proc-macro-error = "*"
+default_params_derive = {package = "default_params", path = "../"}

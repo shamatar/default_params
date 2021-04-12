@@ -2,23 +2,10 @@
 
 extern crate proc_macro;
 use proc_macro::{TokenStream};
-use syn::{spanned::Spanned, FnArg, Ident, Attribute, ItemFn};
+use syn::{spanned::Spanned, FnArg, Ident, Attribute, ItemFn, Pat};
 use quote::{quote, TokenStreamExt};
 use proc_macro2::TokenStream as TokenStream2;
-use proc_macro2::{Span};
-
-
-// #[proc_macro_attribute]
-// #[proc_macro_error]
-// pub fn default_value(args: TokenStream, input: TokenStream) -> TokenStream {
-//     let mut args = TokenStream2::from(args).into_iter();
-//     let mut input = TokenStream2::from(input).into_iter();
-
-//     eprintln!("args = {:?}", args);
-//     eprintln!("default value input = {:?}", input);
-
-//     quote!().into()
-// }
+use proc_macro2::{Span, TokenTree};
 
 const DEFAULT_VALUE_ATTR_NAME: &'static str = "default_value";
 const DEFAULT_VALUE_FUNCTION_ATTR_NAME: &'static str = "default_value_fn";
@@ -62,14 +49,21 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
+    let mut idents_hashmap = std::collections::HashMap::new();
+
     // check python convensions (for now) to see if all default arguments are after the non-default onces
     let mut first_default_found = false;
     let mut defaultable_arguments = vec![];
     let mut non_default_arguments = vec![];
-    for input in parsed_fn.sig.inputs.iter_mut() {
+    for (i, input) in parsed_fn.sig.inputs.iter_mut().enumerate() {
         let input_clone = input.clone();
+        if idents_hashmap.get(&input_clone).is_some() {
+            abort!(input.span(), "Somehow encountered a duplicate argument name");
+        }
+        idents_hashmap.insert(input_clone.clone(), i);
         match input {
-            FnArg::Receiver(_) => {
+            FnArg::Receiver(ref rec) => {
+                eprintln!("Receiver = {:?}", rec);
                 non_default_arguments.push(input_clone);
                 continue
             },
@@ -123,7 +117,7 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
         abort!(parsed_fn.sig.generics.where_clause.span(), "`where` clause is not yet supported");
     }
 
-    for (i, _lifetime_param) in  parsed_fn.sig.generics.lifetimes().enumerate() {
+    for (i, _lifetime_param) in parsed_fn.sig.generics.lifetimes().enumerate() {
         let prefix = "lt";
         let macro_ident = make_named_type_for_macro(prefix, i, "tt");
         generics_capture_for_macro.push(macro_ident);
@@ -131,7 +125,7 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
         generics_placement_for_call.push(call_ident);
     }
 
-    for (i, _const_param) in  parsed_fn.sig.generics.const_params().enumerate() {
+    for (i, _const_param) in parsed_fn.sig.generics.const_params().enumerate() {
         let prefix = "cg";
         let macro_ident = make_named_type_for_macro(prefix, i, "tt");
         generics_capture_for_macro.push(macro_ident);
@@ -139,7 +133,7 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
         generics_placement_for_call.push(call_ident);
     }
 
-    for (i, _param) in  parsed_fn.sig.generics.type_params().enumerate() {
+    for (i, _param) in parsed_fn.sig.generics.type_params().enumerate() {
         let prefix = "g";
         let macro_ident = make_named_type_for_macro(prefix, i, "tt");
         generics_capture_for_macro.push(macro_ident);
@@ -157,10 +151,30 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
         &generics_capture_for_macro,
         proc_macro2::Punct::new(',', proc_macro2::Spacing::Alone),
     );
-    
-    for (i, _arg) in non_default_arguments.into_iter().enumerate() {
-        let expr = make_named_type_for_macro("w", i, "expr");
-        let call_arg = make_named_type_for_macro("w", i, "");
+
+    let mut non_default_arguments_remapped_idents = std::collections::HashMap::new();
+
+    for (i, arg) in non_default_arguments.into_iter().enumerate() {
+        let expr = make_named_type_for_macro("nd", i, "expr");
+        let call_arg = make_named_type_for_macro("nd", i, "");
+
+        match arg {
+            FnArg::Receiver(rec) => {
+                abort!(rec.span(), "can not yet overwrite self-like receiver into macro param");
+            },
+            FnArg::Typed(ty) => {
+                let span = ty.span();
+                match *ty.pat {
+                    Pat::Ident(ident) => {
+                        let recaptured = make_named_type_for_macro("nd", i, "");
+                        non_default_arguments_remapped_idents.insert(ident.ident, recaptured);
+                    },
+                    _ => {
+                        abort!(span, "can not yet overwrite if function parameter is a non-trivial identified");
+                    }
+                }
+            }
+        };
         
         expr_args.push(expr);
         call_args.push(call_arg);
@@ -203,6 +217,35 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
     for (i, full_arg_expr, _attr) in defaultable_arguments.iter() {
         // create macro params like c = $w: expr for full function calls
 
+        // match _attr {
+        //     FillTypeAttr::Expression(ref expr) => {
+        //         let args = expr.parse_args();
+        //         if args.is_err() {
+        //             abort!(expr.span(), "Failed to parse an attribute arguments");
+        //         }
+        //         let args: TokenStream2 = args.unwrap();
+        //         let mut modified_stream = TokenStream2::new();
+        //         for el in args.into_iter() {
+        //             match el {
+        //                 TokenTree::Ident(ident) => {
+        //                     if let Some(remapped) = non_default_arguments_remapped_idents.get(&ident) {
+        //                         modified_stream.extend(remapped.clone().into_iter());
+        //                     } else {
+        //                         modified_stream.append(TokenTree::Ident(ident));
+        //                     }
+        //                 },
+        //                 el @ _ => {
+        //                     modified_stream.append(el);
+        //                 }
+        //             }
+        //         }
+        //         eprintln!("ATTRIBUTE = {:?}", modified_stream);
+        //     },
+        //     FillTypeAttr::Function(func) => {
+        //         abort!(func.span(), "Default functions are not yet implemented");
+        //     }
+        // }
+
         let mut named_macro_argument = proc_macro2::TokenStream::new();
         let arg_name = match full_arg_expr {
             FnArg::Typed(ref ty) => {
@@ -211,7 +254,7 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
             _ => unreachable!()
         };
 
-        let parts = vec![quote!(#arg_name), make_named_type_for_macro("w", *i + num_non_default_args, "expr")];
+        let parts = vec![quote!(#arg_name), make_named_type_for_macro("d", *i, "expr")];
         named_macro_argument.append_separated(
             parts,
             proc_macro2::Punct::new('=', proc_macro2::Spacing::Alone),
@@ -223,6 +266,7 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut cases = vec![];
     extend_call_variants(
         &defaultable_arguments, 
+        &non_default_arguments_remapped_idents,
         &named_macro_exprs,
         &mut cases, 
         vec![], 
@@ -318,6 +362,7 @@ fn make_named_type_for_macro(name_prefix: &str, idx: usize, ty: &str) -> proc_ma
 
 fn extend_call_variants(
     defaultable_arguments: &Vec<(usize, FnArg, FillTypeAttr)>, 
+    remapping: &std::collections::HashMap<Ident, TokenStream2>,
     named_macro_args: & Vec<TokenStream2>,
     cases: &mut Vec<(Vec<TokenStream2>, Vec<TokenStream2>)>,
     mut call_args_chain: Vec<TokenStream2>,
@@ -341,13 +386,28 @@ fn extend_call_variants(
                 FillTypeAttr::Expression(ref expr) => {
                     let args = expr.parse_args();
                     if args.is_err() {
-                        abort!(expr.span(), "Failed to parse an expression");
+                        abort!(expr.span(), "Failed to parse an attribute arguments");
                     }
                     let args: TokenStream2 = args.unwrap();
-                    call_args.push(args);
+                    let mut modified_stream = TokenStream2::new();
+                    for el in args.into_iter() {
+                        match el {
+                            TokenTree::Ident(ident) => {
+                                if let Some(remapped) = remapping.get(&ident) {
+                                    modified_stream.extend(remapped.clone().into_iter());
+                                } else {
+                                    modified_stream.append(TokenTree::Ident(ident));
+                                }
+                            },
+                            el @ _ => {
+                                modified_stream.append(el);
+                            }
+                        }
+                    }
+                    call_args.push(modified_stream);
                 },
-                FillTypeAttr::Function(ref func) => {
-                    abort!(func.span(), "Functions are not supported yet");
+                FillTypeAttr::Function(func) => {
+                    abort!(func.span(), "Default functions are not yet implemented");
                 }
             }
 
@@ -357,6 +417,7 @@ fn extend_call_variants(
             } else {
                 extend_call_variants(
                     defaultable_arguments,
+                    remapping,
                     named_macro_args,
                     cases,
                     call_args,
@@ -375,7 +436,7 @@ fn extend_call_variants(
             // and place default expression into the function call place
 
             macro_args.push(named_macro_args[skip].clone());
-            call_args.push(make_named_type_for_macro("w", skip + num_non_default_params, ""));
+            call_args.push(make_named_type_for_macro("d", skip, ""));
 
             let next_skip = skip + 1;
             if next_skip == defaultable_arguments.len() {
@@ -383,6 +444,7 @@ fn extend_call_variants(
             } else {
                 extend_call_variants(
                     defaultable_arguments,
+                    remapping,
                     named_macro_args,
                     cases,
                     call_args,

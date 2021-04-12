@@ -8,6 +8,9 @@ mod impls {
     pub fn hello_impl(a: usize, b: usize, c: usize) -> usize {
         a * b + c
     }
+    pub fn hello_with_generics_impl<const N: usize>(a: usize, b: usize, c: usize) -> usize {
+        a * b + c + N
+    }
 }
 use impls::*;
 pub fn tododo() -> usize {
@@ -15,4 +18,7 @@ pub fn tododo() -> usize {
 }
 pub fn tododo2() -> usize {
     hello_impl(1, 2, 4)
+}
+pub fn tododo3<const N: usize>() -> usize {
+    hello_with_generics_impl::<N>(1, 2, 4)
 }

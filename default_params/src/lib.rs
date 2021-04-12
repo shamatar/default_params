@@ -1,7 +1,7 @@
 #[allow(missing_fragment_specifier)]
 
 extern crate proc_macro;
-use proc_macro::TokenStream;
+use proc_macro::{Punct, TokenStream};
 use syn::{spanned::Spanned, FnArg, Ident, Attribute, ItemFn};
 use quote::{quote, TokenStreamExt};
 use proc_macro2::TokenStream as TokenStream2;
@@ -116,14 +116,51 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     }
 
+    // make generics capturing part of macro and for call args
+    let mut generics_capture_for_macro = vec![];
+    let mut generics_placement_for_call = vec![];
+    if parsed_fn.sig.generics.where_clause.is_some() {
+        abort!(parsed_fn.sig.generics.where_clause.span(), "`where` clause is not yet supported");
+    }
+
+    for (i, _lifetime_param) in  parsed_fn.sig.generics.lifetimes().enumerate() {
+        let prefix = "lt";
+        let macro_ident = make_named_type_for_macro(prefix, i, "tt");
+        generics_capture_for_macro.push(macro_ident);
+        let call_ident = make_named_type_for_macro(prefix, i, "");
+        generics_placement_for_call.push(call_ident);
+    }
+
+    for (i, _const_param) in  parsed_fn.sig.generics.const_params().enumerate() {
+        let prefix = "cg";
+        let macro_ident = make_named_type_for_macro(prefix, i, "tt");
+        generics_capture_for_macro.push(macro_ident);
+        let call_ident = make_named_type_for_macro(prefix, i, "");
+        generics_placement_for_call.push(call_ident);
+    }
+
+    for (i, _param) in  parsed_fn.sig.generics.type_params().enumerate() {
+        let prefix = "g";
+        let macro_ident = make_named_type_for_macro(prefix, i, "tt");
+        generics_capture_for_macro.push(macro_ident);
+        let call_ident = make_named_type_for_macro(prefix, i, "");
+        generics_placement_for_call.push(call_ident);
+    }
+
     let mut call_args = vec![];
     let mut expr_args = vec![];
 
     let num_non_default_args = non_default_arguments.len();
+
+    let mut generics_capture_macro_args = proc_macro2::TokenStream::new();
+    generics_capture_macro_args.append_separated(
+        &generics_capture_for_macro,
+        proc_macro2::Punct::new(',', proc_macro2::Spacing::Alone),
+    );
     
     for (i, _arg) in non_default_arguments.into_iter().enumerate() {
-        let expr = make_named_ident_and_expr_for_macro(i);
-        let call_arg = make_named_ident_for_macro(i);
+        let expr = make_named_type_for_macro("w", i, "expr");
+        let call_arg = make_named_type_for_macro("w", i, "");
         
         expr_args.push(expr);
         call_args.push(call_arg);
@@ -141,9 +178,25 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
         proc_macro2::Punct::new(',', proc_macro2::Spacing::Alone),
     );
 
+    if !generics_capture_for_macro.is_empty() {
+        expr_args_list = quote!(< #generics_capture_macro_args >, #expr_args_list);
+    }
+
     let original_ident = parsed_fn.sig.ident.clone();
     parsed_fn.sig.ident = Ident::new(&format!("{}_impl", parsed_fn.sig.ident), Span::call_site());
+
     let modified_ident = parsed_fn.sig.ident.clone();
+    let modified_ident = if generics_placement_for_call.is_empty() {
+        quote!(#modified_ident)
+    } else {
+        let mut generic_args_list = proc_macro2::TokenStream::new();
+        generic_args_list.append_separated(
+            generics_placement_for_call,
+            proc_macro2::Punct::new(',', proc_macro2::Spacing::Alone),
+        );
+
+        quote!(#modified_ident::<#generic_args_list>)
+    };
 
     let mut named_macro_exprs = vec![];
 
@@ -158,7 +211,7 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
             _ => unreachable!()
         };
 
-        let parts = vec![quote!(#arg_name), make_named_ident_and_expr_for_macro(*i + num_non_default_args)];
+        let parts = vec![quote!(#arg_name), make_named_type_for_macro("w", *i + num_non_default_args, "expr")];
         named_macro_argument.append_separated(
             parts,
             proc_macro2::Punct::new('=', proc_macro2::Spacing::Alone),
@@ -223,7 +276,6 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
                 }
             ));
         }
-
     }
 
     // we either fill a value with a default expression, or with a function
@@ -250,68 +302,18 @@ pub fn default_params(args: TokenStream, input: TokenStream) -> TokenStream {
     ).into()
 }
 
-fn make_named_ident_for_macro(idx: usize) -> proc_macro2::TokenStream {
-    let tmp = "macro_rules! test{($w: expr) => {}}";
-    let example_expr = syn::parse_str::<syn::ItemMacro>(tmp).unwrap();
-    let base_group = example_expr.mac.tokens.into_iter().next().unwrap();
-    let base_group = match base_group {
-        proc_macro2::TokenTree::Group(g) => g,
-        _ => unreachable!()
-    };
-    let stream = base_group.stream();
-    let mut items = vec![];
-    for item in stream.into_iter() {
-        let mut item = item;
-        item.set_span(Span::call_site());
-        items.push(item);
+
+fn make_named_type_for_macro(name_prefix: &str, idx: usize, ty: &str) -> proc_macro2::TokenStream {
+    assert!(!name_prefix.is_empty());
+    let dollar_sign = proc_macro2::Punct::new('$', proc_macro2::Spacing::Alone);
+    let ident = Ident::new(&format!("{}{}", name_prefix, idx), Span::call_site());
+
+    if ty.is_empty() {
+        quote!(#dollar_sign #ident)
+    } else {
+        let ty_ident = Ident::new(ty, Span::call_site());
+        quote!(#dollar_sign #ident: #ty_ident)
     }
-
-    let mut call_items = items[..2].to_vec();
-    match &mut call_items[1] {
-        proc_macro2::TokenTree::Ident(ref mut idt) => {
-            *idt = Ident::new(&format!("w{}", idx), Span::call_site());
-        },
-        _ => {
-            unreachable!()
-        }
-    };
-
-    let mut call_arg = proc_macro2::TokenStream::new();
-    call_arg.extend(call_items);
-
-    call_arg
-}
-
-
-fn make_named_ident_and_expr_for_macro(idx: usize) -> proc_macro2::TokenStream {
-    let tmp = "macro_rules! test{($w: expr) => {}}";
-    let example_expr = syn::parse_str::<syn::ItemMacro>(tmp).unwrap();
-    let base_group = example_expr.mac.tokens.into_iter().next().unwrap();
-    let base_group = match base_group {
-        proc_macro2::TokenTree::Group(g) => g,
-        _ => unreachable!()
-    };
-    let stream = base_group.stream();
-    let mut items = vec![];
-    for item in stream.into_iter() {
-        let mut item = item;
-        item.set_span(Span::call_site());
-        items.push(item);
-    }
-
-    match &mut items[1] {
-        proc_macro2::TokenTree::Ident(ref mut idt) => {
-            *idt = Ident::new(&format!("w{}", idx), Span::call_site());
-        },
-        _ => {
-            unreachable!()
-        }
-    };
-
-    let mut expr_arg = proc_macro2::TokenStream::new();
-    expr_arg.extend(items);
-
-    expr_arg
 }
 
 fn extend_call_variants(
@@ -373,7 +375,7 @@ fn extend_call_variants(
             // and place default expression into the function call place
 
             macro_args.push(named_macro_args[skip].clone());
-            call_args.push(make_named_ident_for_macro(skip + num_non_default_params));
+            call_args.push(make_named_type_for_macro("w", skip + num_non_default_params, ""));
 
             let next_skip = skip + 1;
             if next_skip == defaultable_arguments.len() {
